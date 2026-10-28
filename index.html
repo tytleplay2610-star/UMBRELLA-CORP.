@@ -321,15 +321,30 @@ function esc(v){ return String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&l
 function applyEvent(ev){
   if(!ev || typeof ev !== 'object' || !ev.id) return;
   const id = String(ev.id).slice(0, 40);
+  const by = ev.by ? String(ev.by).slice(0, 20) : '';
   if(ev.t === 'm+'){
     if(MIS[id] || GONE[id]) return;
-    MIS[id] = {id, title:String(ev.title || '').slice(0, 80), text:String(ev.text || '').slice(0, 1000), ts:+ev.ts || 0, done:{}};
+    MIS[id] = {id, title:String(ev.title || '').slice(0, 80), text:String(ev.text || '').slice(0, 1000), ts:+ev.ts || 0, done:{}, ok:{}};
     if(current) log('Новая миссия: ' + MIS[id].title, 't-warn');
   } else if(ev.t === 'm-'){
     GONE[id] = 1; delete MIS[id];
-  } else if(ev.t === 'md'){
-    if(!MIS[id] || !ev.by) return;
-    MIS[id].done[String(ev.by).slice(0, 20)] = +ev.ts || 0;
+  } else if(ev.t === 'md' || ev.t === 'mc' || ev.t === 'mr'){
+    const m = MIS[id];
+    if(!m || !by) return;
+    m.done = m.done || {}; m.ok = m.ok || {};
+    if(ev.t === 'md'){
+      if(m.ok[by] || m.done[by]) return;
+      m.done[by] = +ev.ts || 0;
+      if(current && current.admin) log('Миссия «' + m.title + '»: ' + by + ' ждёт подтверждения', 't-warn');
+    } else if(ev.t === 'mc'){
+      if(m.ok[by]) return;
+      m.ok[by] = +ev.ts || 0; delete m.done[by];
+      if(current && current.name === by) log('Выполнение миссии «' + m.title + '» подтверждено');
+    } else {
+      if(!m.done[by]) return;
+      delete m.done[by];
+      if(current && current.name === by) log('Выполнение миссии «' + m.title + '» отклонено. Выполните и отправьте снова', 't-bad');
+    }
   } else return;
   saveMis();
   refreshMissions();
@@ -343,16 +358,26 @@ function publishEv(ev){
 function misList(){
   const arr = Object.values(MIS).sort((a, b) => b.ts - a.ts);
   if(!arr.length) return '<div class="panel"><div class="panel-body" style="color:var(--text-muted)">Активных миссий нет.</div></div>';
+  const mono = 'font-family:var(--font-mono);font-size:12px';
   return arr.map(m => {
-    const who = Object.keys(m.done);
-    const mine = who.includes(current.name);
+    const ok = Object.keys(m.ok || {}), wait = Object.keys(m.done || {}), my = current.name;
+    let st = '';
+    if(!current.admin){
+      if(ok.includes(my)) st = '<span class="ok" style="' + mono + '">✓ Выполнение подтверждено</span>';
+      else if(wait.includes(my)) st = '<span class="warn" style="' + mono + '">⏳ Ожидает подтверждения администратора</span>';
+      else if(current.lvl >= 2) st = '<button class="btn btn-sm" data-act="done">Я выполнил</button>';
+    }
+    const pend = current.admin ? wait.map(b =>
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><span style="' + mono + '">' + esc(b) + '</span>' +
+      '<button class="btn btn-sm" data-act="ok" data-by="' + esc(b) + '">Подтвердить</button>' +
+      '<button class="btn btn-sm btn-danger" data-act="no" data-by="' + esc(b) + '">Отклонить</button></div>').join('') : '';
+    const meta = (ok.length ? 'Подтверждено: ' + esc(ok.join(', ')) : 'Пока никто не подтверждён') +
+      (!current.admin && wait.length ? ' · На проверке: ' + wait.length : '');
     return '<div class="panel" data-id="' + esc(m.id) + '"><div class="panel-header">' + esc(m.title) + '</div><div class="panel-body">' +
       '<div style="white-space:pre-wrap;margin-bottom:12px">' + esc(m.text) + '</div>' +
-      '<div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-bottom:12px">' +
-      (who.length ? 'Выполнили: ' + esc(who.join(', ')) : 'Пока никто не выполнил') + '</div>' +
-      (mine ? '<span class="ok" style="font-family:var(--font-mono);font-size:12px">✓ Вы выполнили</span>'
-            : '<button class="btn btn-sm" data-act="done">Отметить выполненной</button>') +
-      (current.admin ? '<button class="btn btn-sm btn-danger" data-act="del">Удалить</button>' : '') +
+      '<div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-bottom:12px">' + meta + '</div>' +
+      (pend ? '<div style="margin-bottom:6px;font-size:12px;color:var(--accent-yellow)">Ждут вашего подтверждения:</div>' + pend : '') +
+      st + (current.admin ? '<button class="btn btn-sm btn-danger" data-act="del">Удалить миссию</button>' : '') +
       '</div></div>';
   }).join('');
 }
@@ -374,11 +399,20 @@ function bindMissions(){
     const b = e.target.closest('button[data-act]');
     if(!b) return;
     const id = b.closest('.panel').dataset.id;
-    if(b.dataset.act === 'done' && current.lvl >= 2){
+    const act = b.dataset.act, by = b.dataset.by;
+    if(act === 'done' && !current.admin && current.lvl >= 2){
       publishEv({t:'md', id, by:current.name, ts:Date.now()});
-      log('Миссия отмечена выполненной');
+      log('Отправлено на подтверждение администратору');
     }
-    if(b.dataset.act === 'del' && current.admin){
+    if(act === 'ok' && current.admin && by){
+      publishEv({t:'mc', id, by, ts:Date.now()});
+      log('Выполнение подтверждено: ' + by);
+    }
+    if(act === 'no' && current.admin && by){
+      publishEv({t:'mr', id, by, ts:Date.now()});
+      log('Выполнение отклонено: ' + by, 't-warn');
+    }
+    if(act === 'del' && current.admin){
       publishEv({t:'m-', id});
       log('Миссия удалена', 't-warn');
     }
