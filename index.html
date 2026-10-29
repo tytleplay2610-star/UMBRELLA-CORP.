@@ -95,11 +95,19 @@ textarea.form-control{resize:vertical;min-height:90px}
     </div>
     <div class="login-tabs">
       <button class="login-tab-btn active" data-tab="cred">ЛОГИН</button>
+      <button class="login-tab-btn" data-tab="reg">РЕГИСТРАЦИЯ</button>
       <button class="login-tab-btn" data-tab="support">ПОДДЕРЖКА</button>
     </div>
     <div id="tab-cred">
       <div class="form-group"><label>Идентификатор</label><input class="form-control" id="u-name" autocomplete="off" placeholder="логин"></div>
       <div class="form-group"><label>Пароль</label><input class="form-control" id="u-pass" type="password" placeholder="••••••••"></div>
+    </div>
+    <div id="tab-reg" style="display:none">
+      <div class="form-group"><label>Логин</label><input class="form-control" id="r-login" autocomplete="off" placeholder="3–20 символов"></div>
+      <div class="form-group"><label>Пароль</label><input class="form-control" id="r-pass" type="password" placeholder="не короче 5 символов"></div>
+      <div class="form-group"><label>Повторите пароль</label><input class="form-control" id="r-pass2" type="password"></div>
+      <button class="btn" id="reg-btn" style="margin-bottom:10px">Создать аккаунт</button>
+      <p style="font-size:11px;color:var(--text-muted);line-height:1.5">Новый аккаунт получает 1 уровень. Повысить уровень может только администратор.</p>
     </div>
     <div id="tab-support" style="display:none">
       <p style="font-size:13px;line-height:1.6;margin-bottom:16px">Корпорация Umbrella развивается благодаря тем, кто её поддерживает. Любая сумма помогает проекту расти.</p>
@@ -145,10 +153,11 @@ window.addEventListener('error', e => {
 });
 if(typeof window.fetch !== 'function') window.fetch = () => Promise.reject(new Error('fetch недоступен'));
 const USERS = {
-  tytle_play:{pass:'26101971',name:'ID-0001',lvl:4,admin:true},
-  tvgirl:{pass:'4589',name:'ID-2001',lvl:2},
-  'неботошнит':{pass:'verity',name:'ID-3001',lvl:3},
-  gupkachek:{pass:'4267',name:'ID-3002',lvl:3}
+  tytle_play:{ph:'903551b3484d699e2ed273063bb64b5d0e5483d06aacec1240153feb549a55d2',name:'ID-0001',lvl:4,admin:true},
+  tvgirl:{ph:'3d30394f80d739c7f272b24cb876506f9a1d65ce39186dd44e9df96c1f72f7de',name:'ID-2001',lvl:2},
+  'неботошнит':{ph:'4eee53bc97b0de6be2934404e1b55dd058e3f4f5cd8296b50ab2be01169e6ba1',name:'ID-3001',lvl:3},
+  gupkachek:{ph:'de42921922f5377680620d15a3369b41ad248a3f1febe1db551f24ba4e46101f',name:'ID-3002',lvl:3},
+  xznemoi:{ph:'017507bf11b9f390334ca263ec2fffad068aaaa990f4b38a25f3e5863c24b505',name:'ID-2002',lvl:2}
 };
 const LEVELS = {1:'Уровень 1',2:'Уровень 2',3:'Уровень 3',4:'Уровень 4'};
 const MODULES = [
@@ -192,16 +201,22 @@ try{ if(localStorage.getItem('umb_term') === '1') setTerm(true); }catch(_){}
 document.querySelectorAll('.login-tab-btn').forEach(b => b.onclick = () => {
   document.querySelectorAll('.login-tab-btn').forEach(x => x.classList.remove('active'));
   b.classList.add('active');
-  const support = b.dataset.tab === 'support';
-  $('tab-cred').style.display = support ? 'none' : 'block';
-  $('tab-support').style.display = support ? 'block' : 'none';
-  $('login-btn').style.display = support ? 'none' : 'block';
+  const t = b.dataset.tab;
+  $('tab-cred').style.display = t === 'cred' ? 'block' : 'none';
+  $('tab-reg').style.display = t === 'reg' ? 'block' : 'none';
+  $('tab-support').style.display = t === 'support' ? 'block' : 'none';
+  $('login-btn').style.display = t === 'cred' ? 'block' : 'none';
   $('login-error').textContent = '';
+  $('login-error').style.color = '';
 });
 $('login-btn').onclick = () => {
-  const u = USERS[$('u-name').value.trim().toLowerCase()];
-  if(u && u.pass === $('u-pass').value) startSession(u);
-  else $('login-error').textContent = 'ОШИБКА: неверный идентификатор или пароль';
+  const login = $('u-name').value.trim().toLowerCase(), pass = $('u-pass').value;
+  const u = USERS[login];
+  if(u && u.ph === passHash(login, pass)) return startSession(u);
+  const a = !u && REG[login];
+  if(a && a.ph === passHash(login, pass)) return startSession(regUsers()[login]);
+  $('login-error').style.color = '';
+  $('login-error').textContent = 'ОШИБКА: неверный идентификатор или пароль';
 };
 ['u-name','u-pass'].forEach(id => $(id).addEventListener('keydown', e => { if(e.key === 'Enter') $('login-btn').click(); }));
 
@@ -220,6 +235,7 @@ function startSession(u){
   openModule('mon');
   try{ startPresence(); }catch(e){ log('Ошибка присутствия: ' + e.message, 't-bad'); }
   try{ startChat(); }catch(e){ log('Ошибка чата: ' + e.message, 't-bad'); }
+  try{ announceSelf(); }catch(e){}
 }
 $('logout-btn').onclick = () => {
   sendPresence('po');
@@ -650,8 +666,9 @@ function statusHtml(on, seen, now){
 }
 function staffRows(){
   const now = Date.now();
-  const rows = Object.keys(USERS).map(login => {
-    const u = USERS[login], p = PRES[u.name] || {s:0, o:0};
+  const all = allUsers();
+  const rows = Object.keys(all).map(login => {
+    const u = all[login], p = PRES[u.name] || {s:0, o:0};
     return {login, u, seen:p.s, on: p.s > p.o && now - p.s < ONLINE_MS};
   }).sort((a, b) => (b.on - a.on) || (b.u.lvl - a.u.lvl));
   const online = rows.filter(r => r.on).length;
@@ -665,28 +682,35 @@ function staffRows(){
     '<div style="overflow-x:auto"><table><tr><th></th><th>Имя</th><th>ID</th><th>Позывной</th><th>Ур.</th><th>Статус</th></tr>' + tr + '</table></div>' + profCard(now);
 }
 function profCard(now){
-  const u = selStaff && USERS[selStaff];
+  const u = selStaff && allUsers()[selStaff];
   if(!u) return '';
   const pr = PROFS[u.name] || {}, p = PRES[u.name] || {s:0, o:0};
   return '<div style="margin-top:16px;border:1px solid var(--border-red);border-radius:4px;padding:14px;display:flex;gap:16px;align-items:center;flex-wrap:wrap">' +
     avaHtml(pr.ava, 72) + '<div style="line-height:1.8;font-size:13px">Имя в системе: <b>' + esc(pr.nick || 'не задано') + '</b><br>ID: ' + esc(u.name) +
     '<br>Позывной: ' + esc(selStaff) + '<br>Уровень: ' + u.lvl + '<br>Статус: ' + statusHtml(p.s > p.o && now - p.s < ONLINE_MS, p.s, now) +
-    '<br><span style="color:var(--text-muted)">' + (pr.ts ? 'Профиль обновлён ' + ago(now - pr.ts) : 'Профиль не настроен или ещё не получен') + '</span></div></div>';
+    '<br><span style="color:var(--text-muted)">' + (pr.ts ? 'Профиль обновлён ' + ago(now - pr.ts) : 'Профиль не настроен или ещё не получен') + '</span></div>' + lvlControl(selStaff, u) + '</div>';
 }
 function renderStaff(){
-  return '<div class="panel"><div class="panel-header">УЧАСТНИКИ КОРПОРАЦИИ</div><div class="panel-body" id="staff-list">' + staffRows() + '</div></div>';
+  return keyPanel() + '<div class="panel"><div class="panel-header">УЧАСТНИКИ КОРПОРАЦИИ</div><div class="panel-body" id="staff-list">' + staffRows() + '</div></div>';
 }
 function refreshStaff(){
   const l = $('staff-list');
+  if(document.activeElement && document.activeElement.id === 'lv-sel') return;
   if(l && current && current.lvl >= 4) l.innerHTML = staffRows();
 }
 function bindStaff(){
-  $('staff-list').onclick = e => {
+  const l = $('staff-list');
+  l.onclick = e => {
+    if(!current || current.lvl < 4) return;
+    if(e.target.id === 'lv-apply'){ applyLevel(); return; }
     const tr = e.target.closest('tr[data-login]');
-    if(!tr || !current || current.lvl < 4) return;
+    if(!tr) return;
     selStaff = selStaff === tr.dataset.login ? null : tr.dataset.login;
     refreshStaff();
   };
+  l.onchange = e => { if(e.target.id === 'lv-sel') lvDraft = {login:selStaff, v:+e.target.value}; };
+  const sv = $('ak-save');
+  if(sv) sv.onclick = saveAdminKey;
 }
 setInterval(refreshStaff, 15000);
 
@@ -768,7 +792,7 @@ function stopChat(){ if(chatEs){ chatEs.close(); chatEs = null; } }
 function chatHtml(){
   if(!CHAT.length) return '<div style="color:var(--text-muted);font-size:12px;font-family:var(--font-mono)">Сообщений пока нет. Напишите первым.</div>';
   const byId = {};
-  Object.values(USERS).forEach(u => byId[u.name] = u);
+  Object.values(allUsers()).forEach(u => byId[u.name] = u);
   return CHAT.map(m => {
     const mine = current && m.by === current.name, u = byId[m.by];
     const who = esc(m.nick || m.by) + (u ? ' <span class="clearance-badge lvl-' + u.lvl + '" style="padding:1px 6px;font-size:10px">L' + u.lvl + '</span>' : '');
@@ -842,8 +866,205 @@ function bindNotif(){
   b.onclick = () => { try{ Notification.requestPermission().then(() => renderContent('prof')); }catch(_){} };
 }
 
+/* Аккаунты: самостоятельная регистрация и повышение уровня администратором */
+const NTFY_A = NTFY + '-accounts';
+const ADMIN_PUB = {kty:'EC', crv:'P-256', x:'iNyGtOQRWBpzKrm5dGLhLyu10AThaQB41uyGIG4_OB4', y:'ZC-d-nCOD0I6tw9u4z4si0f1NBzLFQvRk6-G3qmtBYU', ext:true};
+const LOGIN_RE = /^[A-Za-zА-Яа-яЁё0-9_]{3,20}$/;
+const ECP = {name:'ECDSA', namedCurve:'P-256'}, ECH = {name:'ECDSA', hash:'SHA-256'};
+let REG = {}, LVLS = {}, lvDraft = null, accEs = null;
+try{
+  const c = JSON.parse(localStorage.getItem('umb_acc') || '{}');
+  if(c.r && typeof c.r === 'object') REG = c.r;
+  if(c.l && typeof c.l === 'object') LVLS = c.l;
+}catch(_){}
+function saveAcc(){ try{ localStorage.setItem('umb_acc', JSON.stringify({r:REG, l:LVLS})); }catch(_){} }
+function postAcc(ev){ fetch(NTFY_A, {method:'POST', body:JSON.stringify(ev)}).catch(() => {}); }
+
+function sha256(s){
+  const K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+  const bytes = new TextEncoder().encode(s), l = bytes.length;
+  const nw = (((l + 8) >> 6) + 1) * 16, w = new Uint32Array(nw);
+  for(let i = 0; i < l; i++) w[i >> 2] |= bytes[i] << (24 - (i % 4) * 8);
+  w[l >> 2] |= 0x80 << (24 - (l % 4) * 8);
+  w[nw - 1] = l * 8;
+  let H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+  const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+  for(let o = 0; o < nw; o += 16){
+    const W = new Uint32Array(64);
+    for(let i = 0; i < 16; i++) W[i] = w[o + i];
+    for(let i = 16; i < 64; i++){
+      const s0 = rotr(W[i-15], 7) ^ rotr(W[i-15], 18) ^ (W[i-15] >>> 3), s1 = rotr(W[i-2], 17) ^ rotr(W[i-2], 19) ^ (W[i-2] >>> 10);
+      W[i] = (W[i-16] + s0 + W[i-7] + s1) | 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for(let i = 0; i < 64; i++){
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25), ch = (e & f) ^ (~e & g), t1 = (h + S1 + ch + K[i] + W[i]) | 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22), mj = (a & b) ^ (a & c) ^ (b & c), t2 = (S0 + mj) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H = H.map((v, i) => (v + [a, b, c, d, e, f, g, h][i]) | 0);
+  }
+  return H.map(v => (v >>> 0).toString(16).padStart(8, '0')).join('');
+}
+function passHash(login, pass){ return sha256(login.toLowerCase() + ':' + pass + ':umbrella-v1'); }
+function regId(login){ return 'ID-' + sha256('id:' + login).slice(0, 5).toUpperCase(); }
+function regUsers(){
+  const out = {};
+  Object.keys(REG).forEach(login => {
+    const a = REG[login], l = LVLS[login];
+    out[login] = {login, name:a.id, lvl:(l && l.ph === a.ph) ? l.lvl : 1, reg:true};
+  });
+  return out;
+}
+function allUsers(){ return Object.assign({}, regUsers(), USERS); }
+
+const enc = s => new TextEncoder().encode(s);
+const b64e = u8 => btoa(String.fromCharCode(...u8));
+const b64d = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const lvlMsg = ev => String(ev.login).toLowerCase() + '|' + ev.ph + '|' + (+ev.lvl) + '|' + (+ev.ts);
+const adminJwk = d => ({kty:'EC', crv:'P-256', x:ADMIN_PUB.x, y:ADMIN_PUB.y, d});
+
+async function verifyLvl(ev){
+  try{
+    const key = await crypto.subtle.importKey('jwk', ADMIN_PUB, ECP, false, ['verify']);
+    return await crypto.subtle.verify(ECH, key, b64d(ev.sig), enc(lvlMsg(ev)));
+  }catch(_){ return false; }
+}
+async function signLvl(login, ph, lvl, d){
+  const key = await crypto.subtle.importKey('jwk', adminJwk(d), ECP, false, ['sign']);
+  const ev = {t:'lvl', login, ph, lvl, ts:Date.now()};
+  ev.sig = b64e(new Uint8Array(await crypto.subtle.sign(ECH, key, enc(lvlMsg(ev)))));
+  return ev;
+}
+async function checkKey(d){
+  const key = await crypto.subtle.importKey('jwk', adminJwk(d), ECP, false, ['sign']);
+  const msg = enc('check'), sig = await crypto.subtle.sign(ECH, key, msg);
+  const pub = await crypto.subtle.importKey('jwk', ADMIN_PUB, ECP, false, ['verify']);
+  return crypto.subtle.verify(ECH, pub, sig, msg);
+}
+
+function accountEvent(ev, srv){
+  if(!ev || typeof ev !== 'object') return;
+  const login = String(ev.login || '').toLowerCase();
+  if(!LOGIN_RE.test(login)) return;
+  const ph = String(ev.ph || '');
+  if(!/^[0-9a-f]{64}$/.test(ph)) return;
+  if(ev.t === 'reg'){
+    if(USERS[login] || REG[login]) return;
+    REG[login] = {ph, id:regId(login), ts:srv || +ev.ts || 0};
+    saveAcc(); refreshStaff();
+  } else if(ev.t === 'lvl'){
+    if(REG[login] && REG[login].ph !== ph) return;
+    const lvl = +ev.lvl, ts = +ev.ts;
+    if(!(lvl >= 1 && lvl <= 4) || !Number.isInteger(lvl) || !ts || typeof ev.sig !== 'string' || ev.sig.length > 120) return;
+    verifyLvl(ev).then(ok => {
+      if(!ok) return;
+      if(LVLS[login] && LVLS[login].ts >= ts) return;
+      LVLS[login] = {ph, lvl, ts, sig:ev.sig};
+      saveAcc(); refreshStaff(); refreshSelf();
+    });
+  }
+}
+function refreshSelf(){
+  if(!current || !current.reg) return;
+  const u = regUsers()[current.login];
+  if(!u || u.lvl === current.lvl) return;
+  current.lvl = u.lvl;
+  const b = $('user-badge');
+  b.textContent = LEVELS[u.lvl];
+  b.className = 'clearance-badge lvl-' + u.lvl;
+  const act = document.querySelector('.nav-item.active');
+  const m = act && MODULES.find(x => x.id === act.dataset.id);
+  buildNav();
+  openModule(m && m.lvl <= current.lvl ? m.id : 'mon');
+  updChatBadge();
+  log('Ваш уровень доступа изменён: ' + LEVELS[u.lvl], 't-warn');
+  if(u.lvl >= 4 && !presEs){ try{ startPresence(); }catch(_){} }
+}
+function announceSelf(){
+  if(!current) return;
+  if(current.admin){
+    const items = [];
+    Object.keys(REG).forEach(l => {
+      items.push({t:'reg', login:l, ph:REG[l].ph, ts:REG[l].ts});
+      if(LVLS[l]) items.push(Object.assign({t:'lvl', login:l}, LVLS[l]));
+    });
+    items.slice(0, 60).forEach((ev, i) => setTimeout(() => postAcc(ev), i * 250));
+  } else if(current.reg && REG[current.login]){
+    postAcc({t:'reg', login:current.login, ph:REG[current.login].ph, ts:REG[current.login].ts});
+  }
+}
+try{
+  accEs = new EventSource(NTFY_A + '/sse?since=12h');
+  accEs.onmessage = e => {
+    try{
+      const d = JSON.parse(e.data);
+      if(d.event === 'message') accountEvent(JSON.parse(d.message), d.time ? d.time * 1000 : Date.now());
+    }catch(_){}
+  };
+}catch(_){}
+
+$('reg-btn').onclick = () => {
+  const msg = (t, good) => { const m = $('login-error'); m.textContent = t; m.style.color = good ? 'var(--accent-green)' : ''; };
+  const login = $('r-login').value.trim(), pass = $('r-pass').value, pass2 = $('r-pass2').value, low = login.toLowerCase();
+  if(!LOGIN_RE.test(login)) return msg('Логин: 3–20 символов, буквы, цифры или _');
+  if(pass.length < 5) return msg('Пароль не короче 5 символов');
+  if(pass !== pass2) return msg('Пароли не совпадают');
+  if(USERS[low] || REG[low]) return msg('Такой логин уже занят');
+  const ev = {t:'reg', login:low, ph:passHash(low, pass), ts:Date.now()};
+  accountEvent(ev, ev.ts);
+  postAcc(ev);
+  $('r-pass').value = ''; $('r-pass2').value = '';
+  document.querySelector('.login-tab-btn[data-tab="cred"]').click();
+  $('u-name').value = login;
+  msg('Аккаунт создан (уровень 1). Введите пароль и войдите.', true);
+};
+
+function keyPanel(){
+  if(!current || !current.admin) return '';
+  let has = false;
+  try{ has = !!localStorage.getItem('umb_akey'); }catch(_){}
+  return '<div class="panel"><div class="panel-header">КЛЮЧ АДМИНИСТРАТОРА</div><div class="panel-body">' +
+    '<p id="ak-st" style="margin-bottom:10px;font-size:12px">Ключ на этом устройстве: <b class="' + (has ? 'ok' : 'warn') + '">' + (has ? 'задан' : 'не задан') + '</b>. Он нужен, чтобы менять уровни участников.</p>' +
+    '<input class="form-control" id="ak-in" type="password" autocomplete="off" placeholder="Вставьте ключ" style="margin-bottom:10px"><button class="btn btn-sm" id="ak-save">Сохранить ключ</button></div></div>';
+}
+function lvlControl(login, u){
+  if(!current || !current.admin) return '';
+  if(!u.reg) return '<div style="width:100%;font-size:11px;color:var(--text-muted)">Встроенный аккаунт: уровень меняется только в коде сайта.</div>';
+  const v = (lvDraft && lvDraft.login === login) ? lvDraft.v : u.lvl;
+  return '<div style="width:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="font-size:12px">Новый уровень:</span>' +
+    '<select class="form-control" id="lv-sel" style="width:auto">' + [1, 2, 3, 4].map(n => '<option value="' + n + '"' + (n === v ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>' +
+    '<button class="btn btn-sm" id="lv-apply" style="margin:0">Применить</button></div>';
+}
+async function saveAdminKey(){
+  const inp = $('ak-in'), st = $('ak-st'), d = inp.value.trim();
+  let good = false;
+  try{ good = d.length >= 40 && await checkKey(d); }catch(_){}
+  if(!good){ st.textContent = 'Ключ не подходит. Проверьте, что он вставлен целиком.'; return; }
+  try{ localStorage.setItem('umb_akey', d); }catch(_){}
+  inp.value = '';
+  st.innerHTML = 'Ключ на этом устройстве: <b class="ok">задан</b>.';
+}
+async function applyLevel(){
+  if(!current || !current.admin || !selStaff) return;
+  const u = allUsers()[selStaff];
+  if(!u || !u.reg) return;
+  const v = (lvDraft && lvDraft.login === selStaff) ? lvDraft.v : u.lvl;
+  if(v === u.lvl){ log('Уровень уже равен ' + v); return; }
+  let d = '';
+  try{ d = localStorage.getItem('umb_akey') || ''; }catch(_){}
+  if(!d){ log('Сначала сохраните ключ администратора (панель выше)', 't-bad'); return; }
+  try{
+    const ev = await signLvl(selStaff, REG[selStaff].ph, v, d);
+    accountEvent(ev, ev.ts);
+    postAcc(ev);
+    lvDraft = null;
+    log('Уровень ' + selStaff + ' изменён на ' + v, 't-warn');
+  }catch(e){ log('Не удалось подписать: ключ неверный или браузер не поддерживает подпись', 't-bad'); }
+}
+
 /* Автообновление: страница сама замечает новую версию на сайте */
-const APP_VERSION = '2026-10-29-9';
+const APP_VERSION = '2026-10-29-11';
 let updShown = false;
 function showUpdate(){
   if(updShown) return;
