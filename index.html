@@ -143,6 +143,7 @@ const LEVELS = {1:'Уровень 1',2:'Уровень 2',3:'Уровень 3',4
 const MODULES = [
   {id:'mon',title:'Мониторинг',lvl:1,render:renderMon},
   {id:'news',title:'Новости',lvl:1,render:renderNews},
+  {id:'chat',title:'Чат',lvl:1,render:renderChat},
   {id:'prof',title:'Профиль',lvl:1,render:renderProf},
   {id:'lab',title:'Лаборатории',lvl:2,render:renderLab},
   {id:'mis',title:'Миссии',lvl:2,render:renderMis},
@@ -207,10 +208,12 @@ function startSession(u){
   buildNav();
   openModule('mon');
   startPresence();
+  startChat();
 }
 $('logout-btn').onclick = () => {
   sendPresence('po');
   stopPresence();
+  stopChat();
   current = null;
   $('app-container').style.display = 'none';
   $('login-overlay').style.display = 'flex';
@@ -246,6 +249,7 @@ function renderContent(id){
   if(btn) btn.onclick = () => sendAlert(!alertOn);
   if(id === 'mis') bindMissions();
   if(id === 'prof') bindProf();
+  if(id === 'chat') bindChat();
   if(id === 'staff') bindStaff();
 }
 
@@ -668,8 +672,125 @@ function bindStaff(){
 }
 setInterval(refreshStaff, 15000);
 
+/* Общий чат */
+const NTFY_C = NTFY + '-chat';
+let CHAT = [], CHAT_GONE = {}, chatEs = null, lastSend = 0, chatRead = 0;
+try{
+  const c = JSON.parse(localStorage.getItem('umb_chat') || '{}');
+  if(Array.isArray(c.m)) CHAT = c.m;
+  if(c.g && typeof c.g === 'object') CHAT_GONE = c.g;
+}catch(_){}
+
+function saveChat(){ try{ localStorage.setItem('umb_chat', JSON.stringify({m:CHAT.slice(-150), g:CHAT_GONE})); }catch(_){} }
+function chatActive(){
+  const a = document.querySelector('.nav-item.active');
+  return !!(a && a.dataset.id === 'chat');
+}
+function chatUnread(){
+  return current ? CHAT.filter(m => m.ts > chatRead && m.by !== current.name).length : 0;
+}
+function updChatBadge(){
+  const el = document.querySelector('.nav-item[data-id="chat"] span:last-child');
+  if(!el || !current) return;
+  const n = chatUnread();
+  el.textContent = n ? '● ' + n : '';
+  el.style.color = 'var(--primary-red)';
+}
+function markRead(){
+  chatRead = Math.max(Date.now(), ...CHAT.map(m => m.ts));
+  try{ localStorage.setItem('umb_chat_read:' + current.name, String(chatRead)); }catch(_){}
+  updChatBadge();
+}
+function chatEvent(ev){
+  if(!ev || typeof ev !== 'object' || !ev.id) return;
+  const id = String(ev.id).slice(0, 40);
+  if(ev.t === 'cd'){
+    CHAT_GONE[id] = 1;
+    CHAT = CHAT.filter(m => m.id !== id);
+  } else if(ev.t === 'c'){
+    if(CHAT_GONE[id] || CHAT.some(m => m.id === id)) return;
+    const text = String(ev.text || '').slice(0, 300);
+    if(!text.trim()) return;
+    CHAT.push({id, by:String(ev.by || '').slice(0, 20), nick:cleanNick(ev.nick), text, ts:+ev.ts || 0});
+    CHAT.sort((a, b) => a.ts - b.ts);
+    if(CHAT.length > 150) CHAT = CHAT.slice(-150);
+  } else return;
+  saveChat();
+  refreshChat();
+  if(current && chatActive()) markRead(); else updChatBadge();
+}
+function publishChat(ev){
+  chatEvent(ev);
+  fetch(NTFY_C, {method:'POST', body:JSON.stringify(ev)})
+    .catch(() => log('Нет сети: сообщение видно только на этом устройстве', 't-warn'));
+}
+function sendChat(){
+  const inp = $('c-text'), text = inp.value.trim().slice(0, 300), now = Date.now();
+  if(!text || now - lastSend < 1500) return;
+  lastSend = now;
+  inp.value = '';
+  publishChat({t:'c', id:now.toString(36) + Math.random().toString(36).slice(2, 6), by:current.name, nick:current.nick || '', text, ts:now});
+}
+function startChat(){
+  stopChat();
+  try{ chatRead = +localStorage.getItem('umb_chat_read:' + current.name) || 0; }catch(_){ chatRead = 0; }
+  updChatBadge();
+  try{
+    chatEs = new EventSource(NTFY_C + '/sse?since=12h');
+    chatEs.onmessage = e => {
+      try{
+        const d = JSON.parse(e.data);
+        if(d.event === 'message') chatEvent(JSON.parse(d.message));
+      }catch(_){}
+    };
+  }catch(_){}
+}
+function stopChat(){ if(chatEs){ chatEs.close(); chatEs = null; } }
+
+function chatHtml(){
+  if(!CHAT.length) return '<div style="color:var(--text-muted);font-size:12px;font-family:var(--font-mono)">Сообщений пока нет. Напишите первым.</div>';
+  const byId = {};
+  Object.values(USERS).forEach(u => byId[u.name] = u);
+  return CHAT.map(m => {
+    const mine = current && m.by === current.name, u = byId[m.by];
+    const who = esc(m.nick || m.by) + (u ? ' <span class="clearance-badge lvl-' + u.lvl + '" style="padding:1px 6px;font-size:10px">L' + u.lvl + '</span>' : '');
+    const t = new Date(m.ts).toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
+    return '<div style="display:flex;justify-content:' + (mine ? 'flex-end' : 'flex-start') + ';margin-bottom:8px">' +
+      '<div style="max-width:85%;border:1px solid ' + (mine ? 'var(--border-red)' : 'var(--border-color)') + ';background:var(--bg-panel);border-radius:4px;padding:6px 10px">' +
+      '<div style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-bottom:3px">' + who + ' · ' + t +
+      (current && current.admin ? ' · <span data-del="' + esc(m.id) + '" style="color:var(--primary-red);cursor:pointer">удалить</span>' : '') + '</div>' +
+      '<div style="white-space:pre-wrap;word-break:break-word;font-size:13px">' + esc(m.text) + '</div></div></div>';
+  }).join('');
+}
+function renderChat(){
+  return '<div class="panel"><div class="panel-header">ОБЩИЙ ЧАТ</div><div class="panel-body">' +
+    '<div id="chat-box" style="height:46vh;min-height:220px;overflow-y:auto;background:#000;border:1px solid var(--border-color);border-radius:3px;padding:10px"></div>' +
+    '<div style="display:flex;gap:8px;margin-top:10px"><input class="form-control" id="c-text" maxlength="300" autocomplete="off" placeholder="Сообщение…">' +
+    '<button class="btn" id="c-send" style="width:auto;padding:12px 18px">→</button></div>' +
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;font-family:var(--font-mono)">Сообщения хранятся около 12 часов.</div></div></div>';
+}
+function refreshChat(){
+  const b = $('chat-box');
+  if(!b) return;
+  const stick = b.scrollHeight - b.scrollTop - b.clientHeight < 60;
+  b.innerHTML = chatHtml();
+  if(stick) b.scrollTop = b.scrollHeight;
+}
+function bindChat(){
+  const b = $('chat-box');
+  b.innerHTML = chatHtml();
+  b.scrollTop = b.scrollHeight;
+  markRead();
+  $('c-send').onclick = sendChat;
+  $('c-text').addEventListener('keydown', e => { if(e.key === 'Enter') sendChat(); });
+  b.onclick = e => {
+    const d = e.target.closest('[data-del]');
+    if(d && current.admin) publishChat({t:'cd', id:d.dataset.del});
+  };
+}
+
 /* Автообновление: страница сама замечает новую версию на сайте */
-const APP_VERSION = '2026-10-29-5';
+const APP_VERSION = '2026-10-29-6';
 let updShown = false;
 function showUpdate(){
   if(updShown) return;
