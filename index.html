@@ -146,7 +146,8 @@ const MODULES = [
   {id:'lab',title:'Лаборатории',lvl:2,render:renderLab},
   {id:'mis',title:'Миссии',lvl:2,render:renderMis},
   {id:'arc',title:'Архив проектов',lvl:3,render:renderArc},
-  {id:'red',title:'Красная тревога',lvl:4,render:renderRed}
+  {id:'red',title:'Красная тревога',lvl:4,render:renderRed},
+  {id:'staff',title:'Участники',lvl:4,render:renderStaff}
 ];
 let current = null, alertOn = false;
 const $ = id => document.getElementById(id);
@@ -203,8 +204,11 @@ function startSession(u){
   log('Сессия открыта: ' + u.name + ', ' + LEVELS[u.lvl]);
   buildNav();
   openModule('mon');
+  startPresence();
 }
 $('logout-btn').onclick = () => {
+  sendPresence('po');
+  stopPresence();
   current = null;
   $('app-container').style.display = 'none';
   $('login-overlay').style.display = 'flex';
@@ -446,6 +450,104 @@ function bindMissions(){
     log('Миссия опубликована');
   };
 }
+
+/* Присутствие: кто сейчас в сети (видит уровень 4) */
+const NTFY_P = NTFY + '-presence';
+const ONLINE_MS = 300000;
+let PRES = {}, presEs = null, presTimer = null;
+try{ PRES = JSON.parse(localStorage.getItem('umb_pres') || '{}'); }catch(_){}
+
+function presenceEvent(ev, ts){
+  if(!ev || typeof ev !== 'object' || !ev.by) return;
+  const by = String(ev.by).slice(0, 20);
+  const p = PRES[by] || (PRES[by] = {s:0, o:0});
+  if(ev.t === 'p') p.s = Math.max(p.s, ts);
+  else if(ev.t === 'po'){ p.o = Math.max(p.o, ts); p.s = Math.max(p.s, ts); }
+  else return;
+  try{ localStorage.setItem('umb_pres', JSON.stringify(PRES)); }catch(_){}
+  refreshStaff();
+}
+function sendPresence(t){
+  if(!current) return;
+  const ev = {t, by:current.name};
+  presenceEvent(ev, Date.now());
+  fetch(NTFY_P, {method:'POST', body:JSON.stringify(ev), keepalive:true}).catch(() => {});
+}
+function startPresence(){
+  stopPresence();
+  sendPresence('p');
+  presTimer = setInterval(() => { if(!document.hidden) sendPresence('p'); }, 120000);
+  if(current.lvl >= 4){
+    try{
+      presEs = new EventSource(NTFY_P + '/sse?since=10m');
+      presEs.onmessage = e => {
+        try{
+          const d = JSON.parse(e.data);
+          if(d.event !== 'message') return;
+          presenceEvent(JSON.parse(d.message), d.time ? d.time * 1000 : Date.now());
+        }catch(_){}
+      };
+    }catch(_){}
+  }
+}
+function stopPresence(){
+  clearInterval(presTimer); presTimer = null;
+  if(presEs){ presEs.close(); presEs = null; }
+}
+window.addEventListener('pagehide', () => { if(current) sendPresence('po'); });
+document.addEventListener('visibilitychange', () => { if(!document.hidden && current) sendPresence('p'); });
+
+function ago(ms){
+  const m = Math.round(ms / 60000);
+  if(m < 1) return 'только что';
+  if(m < 60) return m + ' мин назад';
+  const h = Math.round(m / 60);
+  return h < 48 ? h + ' ч назад' : Math.round(h / 24) + ' дн назад';
+}
+function staffRows(){
+  const now = Date.now();
+  const rows = Object.keys(USERS).map(login => {
+    const u = USERS[login], p = PRES[u.name] || {s:0, o:0};
+    return {login, u, seen:p.s, on: p.s > p.o && now - p.s < ONLINE_MS};
+  }).sort((a, b) => (b.on - a.on) || (b.u.lvl - a.u.lvl));
+  const online = rows.filter(r => r.on).length;
+  const tr = rows.map(r => '<tr><td>' + esc(r.u.name) + '</td><td>' + esc(r.login) + '</td><td>L' + r.u.lvl + '</td><td>' +
+    (r.on ? '<span class="ok">● В сети</span>'
+          : '<span style="color:var(--text-muted)">○ ' + (r.seen ? 'был ' + ago(now - r.seen) : 'не в сети') + '</span>') + '</td></tr>').join('');
+  return '<p style="margin-bottom:12px;font-family:var(--font-mono);font-size:12px">В сети: <b class="ok">' + online + '</b> из ' + rows.length + '</p>' +
+    '<div style="overflow-x:auto"><table><tr><th>ID</th><th>Позывной</th><th>Ур.</th><th>Статус</th></tr>' + tr + '</table></div>';
+}
+function renderStaff(){
+  return '<div class="panel"><div class="panel-header">УЧАСТНИКИ КОРПОРАЦИИ</div><div class="panel-body" id="staff-list">' + staffRows() + '</div></div>';
+}
+function refreshStaff(){
+  const l = $('staff-list');
+  if(l && current && current.lvl >= 4) l.innerHTML = staffRows();
+}
+setInterval(refreshStaff, 15000);
+
+/* Автообновление: страница сама замечает новую версию на сайте */
+const APP_VERSION = '2026-10-29-4';
+let updShown = false;
+function showUpdate(){
+  if(updShown) return;
+  updShown = true;
+  if(!current){ location.replace(location.pathname + '?u=' + Date.now()); return; }
+  const b = document.createElement('div');
+  b.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:1002;background:var(--bg-panel);border:1px solid var(--primary-red);padding:10px 14px;font-family:var(--font-mono);font-size:12px;border-radius:4px;box-shadow:0 0 15px var(--primary-red-glow)';
+  b.innerHTML = 'Доступна новая версия терминала.<button class="btn btn-sm" id="upd-btn" style="display:block;margin:8px 0 0">Обновить</button>';
+  document.body.appendChild(b);
+  document.getElementById('upd-btn').onclick = () => location.replace(location.pathname + '?u=' + Date.now());
+}
+async function checkUpdate(){
+  try{
+    const r = await fetch(location.pathname + '?v=' + Date.now(), {cache:'no-store'});
+    const m = (await r.text()).match(/APP_VERSION\s*=\s*'([^']+)'/);
+    if(m && m[1] !== APP_VERSION) showUpdate();
+  }catch(_){}
+}
+setInterval(checkUpdate, 60000);
+document.addEventListener('visibilitychange', () => { if(!document.hidden) checkUpdate(); });
 </script>
 </body>
 </html>
