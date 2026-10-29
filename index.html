@@ -117,7 +117,7 @@ textarea.form-control{resize:vertical;min-height:90px}
       <div class="brand-text"><h1>UMBRELLA CORP.</h1><p>CENTRAL TERMINAL v4.0.2</p></div>
     </div>
     <div class="user-status">
-      <span id="user-name"></span>
+      <span id="user-ava" style="display:inline-flex"></span><span id="user-name"></span>
       <span class="clearance-badge" id="user-badge"></span>
       <button class="logout-btn" id="logout-btn">ВЫХОД</button>
     </div>
@@ -143,6 +143,7 @@ const LEVELS = {1:'Уровень 1',2:'Уровень 2',3:'Уровень 3',4
 const MODULES = [
   {id:'mon',title:'Мониторинг',lvl:1,render:renderMon},
   {id:'news',title:'Новости',lvl:1,render:renderNews},
+  {id:'prof',title:'Профиль',lvl:1,render:renderProf},
   {id:'lab',title:'Лаборатории',lvl:2,render:renderLab},
   {id:'mis',title:'Миссии',lvl:2,render:renderMis},
   {id:'arc',title:'Архив проектов',lvl:3,render:renderArc},
@@ -196,7 +197,8 @@ function startSession(u){
   current = u;
   $('login-overlay').style.display = 'none';
   $('app-container').style.display = 'flex';
-  $('user-name').textContent = u.name;
+  loadSelfProfile();
+  applyHeader();
   const b = $('user-badge');
   b.textContent = LEVELS[u.lvl];
   b.className = 'clearance-badge lvl-' + u.lvl;
@@ -243,6 +245,8 @@ function renderContent(id){
   const btn = $('alert-btn');
   if(btn) btn.onclick = () => sendAlert(!alertOn);
   if(id === 'mis') bindMissions();
+  if(id === 'prof') bindProf();
+  if(id === 'staff') bindStaff();
 }
 
 /* Modules */
@@ -476,8 +480,10 @@ function sendPresence(t){
 function startPresence(){
   stopPresence();
   sendPresence('p');
+  if(current.nick || current.avatar) publishProfile();
   presTimer = setInterval(() => { if(!document.hidden) sendPresence('p'); }, 120000);
   if(current.lvl >= 4){
+    openProfileStream();
     try{
       presEs = new EventSource(NTFY_P + '/sse?since=10m');
       presEs.onmessage = e => {
@@ -493,6 +499,7 @@ function startPresence(){
 function stopPresence(){
   clearInterval(presTimer); presTimer = null;
   if(presEs){ presEs.close(); presEs = null; }
+  if(pfEs){ pfEs.close(); pfEs = null; }
 }
 window.addEventListener('pagehide', () => { if(current) sendPresence('po'); });
 document.addEventListener('visibilitychange', () => { if(!document.hidden && current) sendPresence('p'); });
@@ -504,6 +511,121 @@ function ago(ms){
   const h = Math.round(m / 60);
   return h < 48 ? h + ' ч назад' : Math.round(h / 24) + ' дн назад';
 }
+const NTFY_PF = NTFY + '-profiles';
+const AVA_IMG = /^data:image\/(jpeg|webp);base64,[A-Za-z0-9+\/=]{20,6000}$/;
+let PROFS = {}, pfEs = null, selStaff = null, draftAva = '';
+try{ PROFS = JSON.parse(localStorage.getItem('umb_profs') || '{}'); }catch(_){}
+
+function cleanNick(v){ return String(v || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 24); }
+function cleanAva(a){
+  a = String(a || '');
+  if(AVA_IMG.test(a)) return a;
+  if(a.startsWith('e:') && a.length <= 12 && !/[<>&"']/.test(a)) return a;
+  return '';
+}
+function avaHtml(a, size){
+  size = size || 36;
+  const st = 'width:' + size + 'px;height:' + size + 'px;border-radius:50%;flex-shrink:0;border:1px solid var(--border-color);';
+  a = cleanAva(a);
+  if(a && !a.startsWith('e:')) return '<img src="' + a + '" alt="" style="' + st + 'object-fit:cover">';
+  const e = a ? esc(a.slice(2)) : '☂';
+  return '<span style="' + st + 'display:inline-flex;align-items:center;justify-content:center;background:#000;font-size:' + Math.round(size * 0.55) + 'px">' + e + '</span>';
+}
+function loadSelfProfile(){
+  current.nick = ''; current.avatar = '';
+  try{
+    const p = JSON.parse(localStorage.getItem('umb_prof:' + current.name) || 'null');
+    if(p){ current.nick = cleanNick(p.nick); current.avatar = cleanAva(p.ava); }
+  }catch(_){}
+}
+function applyHeader(){
+  $('user-ava').innerHTML = avaHtml(current.avatar, 28);
+  $('user-name').textContent = current.nick || current.name;
+}
+function profileEvent(ev, ts){
+  if(!ev || typeof ev !== 'object' || ev.t !== 'pf' || !ev.by) return;
+  const by = String(ev.by).slice(0, 20), t = +ev.ts || ts || 0;
+  if(PROFS[by] && PROFS[by].ts >= t) return;
+  PROFS[by] = {nick:cleanNick(ev.nick), ava:cleanAva(ev.ava), ts:t};
+  try{ localStorage.setItem('umb_profs', JSON.stringify(PROFS)); }catch(_){}
+  refreshStaff();
+}
+function publishProfile(){
+  const ev = {t:'pf', by:current.name, nick:current.nick, ava:current.avatar, ts:Date.now()};
+  profileEvent(ev, ev.ts);
+  fetch(NTFY_PF, {method:'POST', body:JSON.stringify(ev)}).catch(() => {});
+}
+function openProfileStream(){
+  try{
+    pfEs = new EventSource(NTFY_PF + '/sse?since=12h');
+    pfEs.onmessage = e => {
+      try{
+        const d = JSON.parse(e.data);
+        if(d.event === 'message') profileEvent(JSON.parse(d.message), d.time ? d.time * 1000 : Date.now());
+      }catch(_){}
+    };
+  }catch(_){}
+}
+function makeAvatar(file, cb){
+  const fr = new FileReader();
+  fr.onerror = () => cb(null);
+  fr.onload = () => {
+    const img = new Image();
+    img.onerror = () => cb(null);
+    img.onload = () => {
+      for(const sz of [72, 56, 44, 32]) for(const q of [0.7, 0.5, 0.35]){
+        const c = document.createElement('canvas'); c.width = c.height = sz;
+        const m = Math.min(img.width, img.height);
+        c.getContext('2d').drawImage(img, (img.width - m) / 2, (img.height - m) / 2, m, m, 0, 0, sz, sz);
+        const u = c.toDataURL('image/jpeg', q);
+        if(u.length < 2800){ cb(u); return; }
+      }
+      cb(null);
+    };
+    img.src = fr.result;
+  };
+  fr.readAsDataURL(file);
+}
+
+function renderProf(){
+  draftAva = current.avatar;
+  const emojis = ['☂', '🧪', '🧬', '☣️', '🔬', '🛡️', '💀', '🧟'];
+  return '<div class="panel"><div class="panel-header">МОЙ ПРОФИЛЬ</div><div class="panel-body">' +
+    '<div style="display:flex;align-items:center;gap:16px;margin-bottom:16px"><div id="prof-ava">' + avaHtml(draftAva, 72) + '</div>' +
+    '<div style="font-size:12px;font-family:var(--font-mono);line-height:1.7">ID: ' + esc(current.name) + '<br>' + LEVELS[current.lvl] + '</div></div>' +
+    '<div class="form-group"><label>Имя в системе</label><input class="form-control" id="p-nick" maxlength="24" autocomplete="off" value="' + esc(current.nick) + '" placeholder="' + esc(current.name) + '"></div>' +
+    '<div class="form-group"><label>Аватарка</label><input type="file" id="p-file" accept="image/*" style="display:none">' +
+    '<button class="btn btn-sm" id="p-pick">Загрузить фото</button><button class="btn btn-sm btn-danger" id="p-clear">Убрать</button>' +
+    '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">' +
+    emojis.map(e => '<button class="chip" data-e="' + e + '" style="font-size:20px;padding:4px 10px">' + e + '</button>').join('') + '</div></div>' +
+    '<div class="login-error" id="p-msg"></div><button class="btn" id="p-save">Сохранить профиль</button></div></div>';
+}
+function bindProf(){
+  const msg = (t, good) => { $('p-msg').textContent = t; $('p-msg').style.color = good ? 'var(--accent-green)' : ''; };
+  const setAva = a => { draftAva = a; $('prof-ava').innerHTML = avaHtml(a, 72); };
+  $('p-pick').onclick = () => $('p-file').click();
+  $('p-file').onchange = e => {
+    const f = e.target.files[0];
+    if(!f) return;
+    msg('Обработка фото…', true);
+    makeAvatar(f, u => { if(u){ setAva(u); msg('Фото готово. Нажмите «Сохранить профиль».', true); } else msg('Не удалось обработать фото. Выберите другое.'); });
+  };
+  $('p-clear').onclick = () => setAva('');
+  document.querySelectorAll('[data-e]').forEach(b => b.onclick = () => setAva('e:' + b.dataset.e));
+  $('p-save').onclick = () => {
+    const raw = $('p-nick').value.trim(), nick = cleanNick(raw);
+    if(raw && nick.length < 2){ msg('Имя должно быть не короче 2 символов'); return; }
+    current.nick = nick; current.avatar = cleanAva(draftAva);
+    try{ localStorage.setItem('umb_prof:' + current.name, JSON.stringify({nick:current.nick, ava:current.avatar})); }catch(_){}
+    applyHeader(); publishProfile();
+    msg('Профиль сохранён', true); log('Профиль обновлён');
+  };
+}
+
+function statusHtml(on, seen, now){
+  return on ? '<span class="ok">● В сети</span>'
+            : '<span style="color:var(--text-muted)">○ ' + (seen ? 'был ' + ago(now - seen) : 'не в сети') + '</span>';
+}
 function staffRows(){
   const now = Date.now();
   const rows = Object.keys(USERS).map(login => {
@@ -511,11 +633,23 @@ function staffRows(){
     return {login, u, seen:p.s, on: p.s > p.o && now - p.s < ONLINE_MS};
   }).sort((a, b) => (b.on - a.on) || (b.u.lvl - a.u.lvl));
   const online = rows.filter(r => r.on).length;
-  const tr = rows.map(r => '<tr><td>' + esc(r.u.name) + '</td><td>' + esc(r.login) + '</td><td>L' + r.u.lvl + '</td><td>' +
-    (r.on ? '<span class="ok">● В сети</span>'
-          : '<span style="color:var(--text-muted)">○ ' + (r.seen ? 'был ' + ago(now - r.seen) : 'не в сети') + '</span>') + '</td></tr>').join('');
-  return '<p style="margin-bottom:12px;font-family:var(--font-mono);font-size:12px">В сети: <b class="ok">' + online + '</b> из ' + rows.length + '</p>' +
-    '<div style="overflow-x:auto"><table><tr><th>ID</th><th>Позывной</th><th>Ур.</th><th>Статус</th></tr>' + tr + '</table></div>';
+  const tr = rows.map(r => {
+    const pr = PROFS[r.u.name] || {};
+    return '<tr data-login="' + esc(r.login) + '" style="cursor:pointer"><td>' + avaHtml(pr.ava, 28) + '</td><td>' + esc(pr.nick || '—') + '</td><td>' +
+      esc(r.u.name) + '</td><td>' + esc(r.login) + '</td><td>L' + r.u.lvl + '</td><td>' + statusHtml(r.on, r.seen, now) + '</td></tr>';
+  }).join('');
+  return '<p style="margin-bottom:12px;font-family:var(--font-mono);font-size:12px">В сети: <b class="ok">' + online + '</b> из ' + rows.length +
+    ' · нажмите на строку, чтобы открыть профиль</p>' +
+    '<div style="overflow-x:auto"><table><tr><th></th><th>Имя</th><th>ID</th><th>Позывной</th><th>Ур.</th><th>Статус</th></tr>' + tr + '</table></div>' + profCard(now);
+}
+function profCard(now){
+  const u = selStaff && USERS[selStaff];
+  if(!u) return '';
+  const pr = PROFS[u.name] || {}, p = PRES[u.name] || {s:0, o:0};
+  return '<div style="margin-top:16px;border:1px solid var(--border-red);border-radius:4px;padding:14px;display:flex;gap:16px;align-items:center;flex-wrap:wrap">' +
+    avaHtml(pr.ava, 72) + '<div style="line-height:1.8;font-size:13px">Имя в системе: <b>' + esc(pr.nick || 'не задано') + '</b><br>ID: ' + esc(u.name) +
+    '<br>Позывной: ' + esc(selStaff) + '<br>Уровень: ' + u.lvl + '<br>Статус: ' + statusHtml(p.s > p.o && now - p.s < ONLINE_MS, p.s, now) +
+    '<br><span style="color:var(--text-muted)">' + (pr.ts ? 'Профиль обновлён ' + ago(now - pr.ts) : 'Профиль не настроен или ещё не получен') + '</span></div></div>';
 }
 function renderStaff(){
   return '<div class="panel"><div class="panel-header">УЧАСТНИКИ КОРПОРАЦИИ</div><div class="panel-body" id="staff-list">' + staffRows() + '</div></div>';
@@ -524,10 +658,18 @@ function refreshStaff(){
   const l = $('staff-list');
   if(l && current && current.lvl >= 4) l.innerHTML = staffRows();
 }
+function bindStaff(){
+  $('staff-list').onclick = e => {
+    const tr = e.target.closest('tr[data-login]');
+    if(!tr || !current || current.lvl < 4) return;
+    selStaff = selStaff === tr.dataset.login ? null : tr.dataset.login;
+    refreshStaff();
+  };
+}
 setInterval(refreshStaff, 15000);
 
 /* Автообновление: страница сама замечает новую версию на сайте */
-const APP_VERSION = '2026-10-29-4';
+const APP_VERSION = '2026-10-29-5';
 let updShown = false;
 function showUpdate(){
   if(updShown) return;
